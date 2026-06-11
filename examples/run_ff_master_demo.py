@@ -20,7 +20,7 @@ except ImportError as exc:
 
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MODEL = ROOT / "assets" / "ff-master" / "scene.xml"
+DEFAULT_MODEL = ROOT / "assets" / "Master" / "scene.xml"
 DEFAULT_OUTPUT = ROOT / "outputs" / "ff_master_demo.mp4"
 DEFAULT_TRAJECTORY = ROOT / "outputs" / "ff_master_trajectory.json"
 
@@ -172,7 +172,7 @@ def run_demo(
         "project": "FF Master MuJoCo Test Demo",
         "task": "The FF Master humanoid model loads with its mesh assets and performs a deterministic showcase pose animation.",
         "model": str(model_path),
-        "source": "FF Master model package (assets/ff-master)",
+        "source": "FF Master model package (assets/Master)",
         "video": str(video_path),
         "trajectory": str(trajectory_path),
         "duration_s": duration_s,

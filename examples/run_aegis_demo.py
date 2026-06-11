@@ -21,9 +21,9 @@ except ImportError as exc:
 
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_URDF = ROOT / "assets" / "zsl-1" / "urdf" / "ZSL-1_mujoco.urdf"
-DEFAULT_OUTPUT = ROOT / "outputs" / "zsl1_demo_v4_wide.mp4"
-DEFAULT_TRAJECTORY = ROOT / "outputs" / "zsl1_trajectory_v4_wide.json"
+DEFAULT_URDF = ROOT / "assets" / "Aegis" / "urdf" / "Aegis_mujoco.urdf"
+DEFAULT_OUTPUT = ROOT / "outputs" / "aegis_demo_v4_wide.mp4"
+DEFAULT_TRAJECTORY = ROOT / "outputs" / "aegis_trajectory_v4_wide.json"
 
 LEGS = ("FL", "FR", "RR", "RL")
 LEG_PHASE = {"FL": 0.0, "RR": 0.0, "FR": math.pi, "RL": math.pi}
@@ -46,8 +46,8 @@ def ensure_mujoco_urdf(source_urdf: Path, output_urdf: Path) -> Path:
     text = re.sub(r'filename="\.\./meshes/([^"]+)"', r'filename="\1"', text)
     if "<mujoco>" not in text:
         text = text.replace(
-            '<robot\n  name="ZSL-1">',
-            '<robot\n  name="ZSL-1">\n  <mujoco>\n'
+            '<robot\n  name="Aegis">',
+            '<robot\n  name="Aegis">\n  <mujoco>\n'
             '    <compiler meshdir="../meshes" discardvisual="false"/>\n'
             "  </mujoco>\n",
         )
@@ -65,7 +65,7 @@ def build_model(urdf_path: Path) -> mujoco.MjModel:
 
     base = spec.body("BASE_LINK")
     if base is None:
-        raise ValueError("Missing BASE_LINK body in ZSL-1 URDF")
+        raise ValueError("Missing BASE_LINK body in Aegis URDF")
     base.add_freejoint(name="floating_base_joint")
 
     world = spec.worldbody
@@ -221,9 +221,9 @@ def run_demo(
     height: int,
 ) -> dict:
     source_urdf = urdf_path
-    if urdf_path.name == "ZSL-1_mujoco.urdf" and not urdf_path.exists():
-        source_urdf = urdf_path.with_name("ZSL-1.urdf")
-    if source_urdf.name == "ZSL-1.urdf":
+    if urdf_path.name == "Aegis_mujoco.urdf" and not urdf_path.exists():
+        source_urdf = urdf_path.with_name("Aegis.urdf")
+    if source_urdf.name == "Aegis.urdf":
         urdf_path = ensure_mujoco_urdf(source_urdf, urdf_path)
 
     model = build_model(urdf_path)
@@ -256,10 +256,10 @@ def run_demo(
 
     final_pos = body_position(model, data, "BASE_LINK")
     summary = {
-        "project": "ZSL-1 Robot Dog MuJoCo Test Demo",
-        "task": "The packaged ZSL-1 quadruped URDF loads with STL meshes and performs a deterministic patrol gait animation.",
+        "project": "Aegis Robot Dog MuJoCo Test Demo",
+        "task": "The packaged Aegis quadruped URDF loads with STL meshes and performs a deterministic patrol gait animation.",
         "model": str(urdf_path),
-        "source": str(ROOT / "assets" / "zsl-1"),
+        "source": str(ROOT / "assets" / "Aegis"),
         "video": str(video_path),
         "trajectory": str(trajectory_path),
         "duration_s": duration_s,
@@ -283,7 +283,7 @@ def run_demo(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate a MuJoCo demo video using the packaged ZSL-1 robot dog URDF."
+        description="Generate a MuJoCo demo video using the packaged Aegis robot dog URDF."
     )
     parser.add_argument("--urdf", type=Path, default=DEFAULT_URDF)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)

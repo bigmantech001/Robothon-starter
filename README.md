@@ -162,8 +162,11 @@ Run examples:
 
 ```bash
 python examples/run_ff_master_demo.py
-python examples/run_zsl1_demo.py
+python examples/run_aegis_demo.py
+python examples/run_futurist_demo.py --check-assets
 ```
+
+`run_futurist_demo.py` generates a MuJoCo showcase video when the Futurist mesh files are present. Use `--check-assets` first to verify that every mesh referenced by `assets/Futurist/futurist.urdf` is included.
 
 Open MuJoCo Viewer:
 
@@ -175,8 +178,17 @@ python -m mujoco.viewer
 
 | Path | Description |
 |------|-------------|
-| `assets/ff-master/` | FF Master humanoid (ultra / hand / fist variants) |
-| `assets/zsl-1/` | ZSL-1 robot URDF / MuJoCo model |
+| `assets/Master/` | FF Master humanoid MuJoCo assets (ultra / hand / fist variants) |
+| `assets/Aegis/` | Aegis quadruped URDF / MuJoCo model |
+| `assets/Futurist/` | FF Futurist humanoid URDF asset package |
 | `examples/` | Example run scripts |
 | `model_catalog.json` | Reference list of recommended open-source robot models |
 | `submissions/SUBMISSION_TEMPLATE/` | Submission folder template with UUID placeholder |
+
+### Example Scripts
+
+| Script | Asset | Output |
+|--------|-------|--------|
+| `examples/run_ff_master_demo.py` | `assets/Master/scene.xml` | FF Master showcase video and trajectory JSON |
+| `examples/run_aegis_demo.py` | `assets/Aegis/urdf/Aegis_mujoco.urdf` | Aegis patrol video and trajectory JSON |
+| `examples/run_futurist_demo.py` | `assets/Futurist/futurist.urdf` | Futurist showcase video and trajectory JSON |
