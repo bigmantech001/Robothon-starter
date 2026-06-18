@@ -1,0 +1,787 @@
+<mujoco model="prometheus_surgical_robot">
+  <!--
+    PROMETHEUS — Autonomous Dual-Arm Dexterous Surgical Robot
+    FFAI Robothon Summer 2026
+    
+    Master scene: dual 7-DOF arms + 24-DOF dexterous hands + surgical workspace
+    Total DOF: 62 actively controlled joints + free bodies
+  -->
+
+  <compiler autolimits="true" angle="radian"/>
+
+  <option timestep="0.001" integrator="Euler" cone="elliptic" solver="CG"
+          iterations="100" tolerance="1e-8" gravity="0 0 -9.81">
+    <flag contact="enable" constraint="enable" sensor="enable"/>
+  </option>
+
+  <size nconmax="2000" njmax="4000"/>
+
+  <!-- ═══════════════════ VISUAL SETTINGS ═══════════════════ -->
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0.2 0.2 0.2"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <quality shadowsize="4096"/>
+    <map znear="0.001" zfar="50" force="0.05"/>
+    <global offwidth="1920" offheight="1080"/>
+  </visual>
+
+  <!-- ═══════════════════ DEFAULTS ═══════════════════ -->
+  <default>
+    <!-- Arm defaults -->
+    <default class="arm_joint">
+      <joint type="hinge" damping="20.0" armature="1.0" frictionloss="1.0"/>
+      <geom type="capsule" rgba="0.25 0.25 0.28 1" contype="0" conaffinity="0"/>
+    </default>
+
+    <!-- Hand defaults -->
+    <default class="finger_joint">
+      <joint type="hinge" damping="1.0" armature="0.1" frictionloss="0.1"/>
+    </default>
+    <default class="finger_geom">
+      <geom type="capsule" rgba="0.85 0.75 0.65 1" contype="0" conaffinity="0"
+            friction="1.5 0.005 0.001" solimp="0.95 0.99 0.001" solref="0.004 1"/>
+    </default>
+    <default class="fingertip_geom">
+      <geom type="sphere" rgba="0.90 0.78 0.68 1" contype="0" conaffinity="0"
+            friction="2.0 0.01 0.001" solimp="0.95 0.99 0.001" solref="0.004 1"/>
+    </default>
+
+    <!-- Surgical tool defaults -->
+    <default class="needle_geom">
+      <geom type="capsule" rgba="0.75 0.75 0.80 1" contype="2" conaffinity="3"
+            friction="1.0 0.005 0.001" mass="0.005"/>
+    </default>
+    <default class="thread_geom">
+      <geom type="capsule" rgba="0.1 0.3 0.8 1" contype="2" conaffinity="3"
+            friction="0.8 0.005 0.001" mass="0.01"/>
+    </default>
+
+    <!-- Tissue defaults -->
+    <default class="tissue_geom">
+      <geom type="box" rgba="0.85 0.55 0.50 1" contype="4" conaffinity="7"
+            friction="1.2 0.01 0.001" solimp="0.90 0.95 0.005" solref="0.01 1.5"/>
+    </default>
+
+    <!-- Actuator defaults -->
+    <default class="arm_actuator">
+      <position kp="500" kv="50" ctrlrange="-3.14 3.14" forcerange="-200 200"/>
+    </default>
+    <default class="finger_actuator">
+      <position kp="10" kv="1" forcerange="-5 5"/>
+    </default>
+  </default>
+
+  <!-- ═══════════════════ ASSETS ═══════════════════ -->
+  <asset>
+    <!-- Textures -->
+    <texture name="grid_tex" type="2d" builtin="checker" rgb1="0.08 0.12 0.08"
+             rgb2="0.10 0.14 0.10" width="512" height="512"/>
+    <texture name="steel_tex" type="2d" builtin="flat" rgb1="0.6 0.62 0.65"
+             width="64" height="64"/>
+    <texture name="tissue_tex" type="2d" builtin="flat" rgb1="0.85 0.55 0.50"
+             width="64" height="64"/>
+    <texture name="table_tex" type="2d" builtin="flat" rgb1="0.15 0.30 0.15"
+             width="64" height="64"/>
+    <texture name="sky_tex" type="skybox" builtin="gradient"
+             rgb1="0.05 0.08 0.15" rgb2="0.15 0.20 0.30" width="256" height="256"/>
+
+    <!-- Materials -->
+    <material name="floor_mat" texture="grid_tex" texrepeat="10 10"
+              reflectance="0.15" specular="0.2" shininess="0.3"/>
+    <material name="steel_mat" texture="steel_tex" specular="0.8" shininess="0.9"
+              reflectance="0.3" rgba="0.65 0.67 0.70 1"/>
+    <material name="table_mat" texture="table_tex" specular="0.1" shininess="0.3"
+              rgba="0.15 0.35 0.15 1"/>
+    <material name="tissue_mat" texture="tissue_tex" specular="0.1" shininess="0.1"
+              rgba="0.88 0.55 0.50 1"/>
+    <material name="skin_mat" specular="0.05" shininess="0.1"
+              rgba="0.85 0.75 0.65 1"/>
+    <material name="robot_mat" specular="0.6" shininess="0.7"
+              rgba="0.25 0.25 0.28 1"/>
+    <material name="needle_mat" specular="0.9" shininess="0.95"
+              rgba="0.78 0.78 0.82 1" reflectance="0.4"/>
+    <material name="thread_mat" specular="0.1" shininess="0.1"
+              rgba="0.1 0.3 0.8 1"/>
+    <material name="wound_mat" specular="0.05" shininess="0.1"
+              rgba="0.7 0.2 0.2 1"/>
+    <material name="base_mat" specular="0.4" shininess="0.5"
+              rgba="0.2 0.2 0.22 1"/>
+  </asset>
+
+  <!-- ═══════════════════ WORLDBODY ═══════════════════ -->
+  <worldbody>
+    <!-- Lighting -->
+    <light name="overhead_light" pos="0 0 2.5" dir="0 0 -1" diffuse="0.8 0.8 0.85"
+           specular="0.5 0.5 0.5" ambient="0.15 0.15 0.18" castshadow="true"
+           cutoff="60" directional="false"/>
+    <light name="surgical_light_1" pos="0.3 0.3 1.8" dir="-0.2 -0.2 -1"
+           diffuse="0.9 0.9 0.95" specular="0.7 0.7 0.7" castshadow="true"
+           cutoff="45"/>
+    <light name="surgical_light_2" pos="-0.3 -0.3 1.8" dir="0.2 0.2 -1"
+           diffuse="0.7 0.7 0.75" specular="0.4 0.4 0.4" castshadow="true"
+           cutoff="45"/>
+    <light name="fill_light" pos="0 1.5 1.0" dir="0 -1 -0.3"
+           diffuse="0.3 0.3 0.35" castshadow="false"/>
+
+    <!-- Floor -->
+    <geom name="floor" type="plane" size="5 5 0.01" material="floor_mat"
+          contype="8" conaffinity="8"/>
+
+    <!-- ═══════════════ CAMERAS ═══════════════ -->
+    <camera name="overview" pos="0.8 -1.0 1.5" xyaxes="0.8 0.6 0 -0.3 0.4 0.86"
+            fovy="50"/>
+    <camera name="top_down" pos="0 0 2.0" xyaxes="1 0 0 0 1 0" fovy="40"/>
+    <camera name="hands_close" pos="0.0 -0.4 1.15" xyaxes="1 0 0 0 0.3 0.95"
+            fovy="35"/>
+    <camera name="right_side" pos="0.8 0 1.1" xyaxes="0 1 0 -0.3 0 0.95"
+            fovy="45"/>
+    <camera name="left_side" pos="-0.8 0 1.1" xyaxes="0 -1 0 0.3 0 0.95"
+            fovy="45"/>
+    <camera name="detail" pos="0.05 -0.25 1.12" xyaxes="1 0 0 0 0.2 0.98"
+            fovy="25"/>
+
+    <!-- ═══════════════ OPERATING TABLE ═══════════════ -->
+    <body name="table" pos="0 0 0.75">
+      <geom name="table_top" type="box" size="0.5 0.35 0.025" material="table_mat"/>
+      <geom name="table_leg_1" type="cylinder" fromto="-0.4 -0.28 -0.025 -0.4 -0.28 -0.75"
+            size="0.03" material="steel_mat"/>
+      <geom name="table_leg_2" type="cylinder" fromto="0.4 -0.28 -0.025 0.4 -0.28 -0.75"
+            size="0.03" material="steel_mat"/>
+      <geom name="table_leg_3" type="cylinder" fromto="-0.4 0.28 -0.025 -0.4 0.28 -0.75"
+            size="0.03" material="steel_mat"/>
+      <geom name="table_leg_4" type="cylinder" fromto="0.4 0.28 -0.025 0.4 0.28 -0.75"
+            size="0.03" material="steel_mat"/>
+
+      <!-- ═══════════ TISSUE PAD (Left side of wound) ═══════════ -->
+      <body name="tissue_pad_left" pos="-0.05 0 0.025">
+        <geom name="tissue_left_base" type="box" size="0.12 0.15 0.015" material="tissue_mat"/>
+        <!-- Wound edge — slightly raised -->
+        <geom name="wound_edge_left" type="box" pos="0.11 0 0.01" size="0.015 0.12 0.008"
+              material="wound_mat"/>
+        <!-- Surface detail bumps for realism -->
+        <geom name="tissue_detail_l1" type="sphere" pos="-0.05 0.05 0.015" size="0.008"
+              material="tissue_mat" contype="0" conaffinity="0"/>
+        <geom name="tissue_detail_l2" type="sphere" pos="-0.03 -0.04 0.015" size="0.006"
+              material="tissue_mat" contype="0" conaffinity="0"/>
+        <geom name="tissue_detail_l3" type="sphere" pos="-0.08 0.02 0.015" size="0.007"
+              material="tissue_mat" contype="0" conaffinity="0"/>
+
+        <!-- Suture entry point markers -->
+        <site name="entry_point_1" pos="0.10 0.06 0.015" size="0.003" rgba="0 1 0 0.8"/>
+        <site name="entry_point_2" pos="0.10 0.02 0.015" size="0.003" rgba="0 1 0 0.8"/>
+        <site name="entry_point_3" pos="0.10 -0.02 0.015" size="0.003" rgba="0 1 0 0.8"/>
+        <site name="entry_point_4" pos="0.10 -0.06 0.015" size="0.003" rgba="0 1 0 0.8"/>
+      </body>
+
+      <!-- ═══════════ TISSUE PAD (Right side of wound) ═══════════ -->
+      <body name="tissue_pad_right" pos="0.05 0 0.025">
+        <geom name="tissue_right_base" type="box" size="0.12 0.15 0.015" material="tissue_mat"/>
+        <!-- Wound edge -->
+        <geom name="wound_edge_right" type="box" pos="-0.11 0 0.01" size="0.015 0.12 0.008"
+              material="wound_mat"/>
+        <!-- Surface detail bumps -->
+        <geom name="tissue_detail_r1" type="sphere" pos="0.05 0.05 0.015" size="0.008"
+              material="tissue_mat" contype="0" conaffinity="0"/>
+        <geom name="tissue_detail_r2" type="sphere" pos="0.03 -0.04 0.015" size="0.006"
+              material="tissue_mat" contype="0" conaffinity="0"/>
+
+        <!-- Suture exit point markers -->
+        <site name="exit_point_1" pos="-0.10 0.06 0.015" size="0.003" rgba="1 0.5 0 0.8"/>
+        <site name="exit_point_2" pos="-0.10 0.02 0.015" size="0.003" rgba="1 0.5 0 0.8"/>
+        <site name="exit_point_3" pos="-0.10 -0.02 0.015" size="0.003" rgba="1 0.5 0 0.8"/>
+        <site name="exit_point_4" pos="-0.10 -0.06 0.015" size="0.003" rgba="1 0.5 0 0.8"/>
+      </body>
+
+      <!-- Wound gap visualization -->
+      <geom name="wound_gap" type="box" pos="0 0 0.02" size="0.008 0.12 0.012"
+            rgba="0.5 0.15 0.15 0.6" contype="0" conaffinity="0"/>
+
+      <!-- Instrument tray -->
+      <body name="instrument_tray" pos="0.35 0 0.025">
+        <geom name="tray_base" type="box" size="0.08 0.12 0.005" material="steel_mat"/>
+        <geom name="tray_rim_1" type="box" pos="0 -0.12 0.01" size="0.08 0.003 0.01"
+              material="steel_mat"/>
+        <geom name="tray_rim_2" type="box" pos="0 0.12 0.01" size="0.08 0.003 0.01"
+              material="steel_mat"/>
+        <geom name="tray_rim_3" type="box" pos="-0.08 0 0.01" size="0.003 0.12 0.01"
+              material="steel_mat"/>
+        <geom name="tray_rim_4" type="box" pos="0.08 0 0.01" size="0.003 0.12 0.01"
+              material="steel_mat"/>
+      </body>
+    </body>
+
+    <!-- ═══════════════════ ROBOT BASE ═══════════════════ -->
+    <body name="robot_base" pos="0 -0.45 0.75">
+      <geom name="base_plate" type="box" size="0.3 0.05 0.02" material="base_mat"/>
+      <geom name="base_pillar" type="cylinder" fromto="0 0 -0.02 0 0 -0.75"
+            size="0.05" material="base_mat"/>
+
+      <!-- ═══════════════ RIGHT ARM (7-DOF) ═══════════════ -->
+      <body name="right_shoulder_base" pos="0.12 0.03 0.03">
+        <geom name="r_shoulder_housing" type="sphere" size="0.04" material="robot_mat"/>
+        <joint name="r_shoulder_yaw" class="arm_joint" axis="0 0 1" range="-2.0 2.0"/>
+        <joint name="r_shoulder_pitch" class="arm_joint" axis="0 1 0" range="-1.57 2.5"/>
+        <joint name="r_shoulder_roll" class="arm_joint" axis="1 0 0" range="-1.57 1.57"/>
+        <geom name="r_upper_arm" type="capsule" fromto="0 0 0 0.18 0 0"
+              size="0.025" material="robot_mat"/>
+
+        <body name="right_elbow" pos="0.18 0 0">
+          <geom name="r_elbow_joint_geom" type="sphere" size="0.028" material="robot_mat"/>
+          <joint name="r_elbow_flex" class="arm_joint" axis="0 1 0" range="0 2.5"/>
+          <geom name="r_forearm" type="capsule" fromto="0 0 0 0.16 0 0"
+                size="0.022" material="robot_mat"/>
+
+          <body name="right_wrist" pos="0.16 0 0">
+            <geom name="r_wrist_geom" type="sphere" size="0.022" material="robot_mat"/>
+            <joint name="r_wrist_pronation" class="arm_joint" axis="1 0 0" range="-1.57 1.57" damping="5.0"/>
+            <joint name="r_wrist_flex" class="arm_joint" axis="0 1 0" range="-1.0 1.0" damping="5.0"/>
+            <joint name="r_wrist_dev" class="arm_joint" axis="0 0 1" range="-0.5 0.5" damping="5.0"/>
+
+            <body name="r_palm" pos="0.03 0 0">
+              <geom name="r_palm_geom" type="box" size="0.035 0.04 0.012" material="skin_mat"/>
+              <site name="r_palm_touch" pos="0 0 0.012" size="0.02 0.03 0.001" type="box" rgba="0 0.8 0 0.3"/>
+              <body name="r_thumb_cmc" pos="0.02 -0.035 0.005" euler="0 0.3 -0.8">
+                <geom name="r_thumb_cmc_geom" class="finger_geom" fromto="0 0 0 0.025 0 0" size="0.009"/>
+                <joint name="r_thumb_cmc_flex" class="finger_joint" axis="0 1 0" range="-0.2 1.4"/>
+                <joint name="r_thumb_cmc_abd" class="finger_joint" axis="0 0 1" range="-0.5 0.5"/>
+                <body name="r_thumb_mcp" pos="0.025 0 0">
+                  <geom name="r_thumb_mcp_geom" class="finger_geom" fromto="0 0 0 0.022 0 0" size="0.008"/>
+                  <joint name="r_thumb_mcp_flex" class="finger_joint" axis="0 1 0" range="-0.1 1.2"/>
+                  <body name="r_thumb_ip" pos="0.022 0 0">
+                    <geom name="r_thumb_ip_geom" class="finger_geom" fromto="0 0 0 0.018 0 0" size="0.007"/>
+                    <joint name="r_thumb_ip_flex" class="finger_joint" axis="0 1 0" range="-0.1 1.0"/>
+                    <body name="r_thumb_tip" pos="0.018 0 0">
+                      <geom name="r_thumb_tip_geom" class="fingertip_geom" size="0.008"/>
+                      <site name="r_thumb_touch" pos="0 0 0" size="0.008" rgba="0 0.8 0 0.3"/>
+                    </body>
+                  </body>
+                </body>
+              </body>
+              <body name="r_index_mcp_base" pos="0.035 -0.022 0.008" euler="0 0 -0.1">
+                <joint name="r_index_abd" class="finger_joint" axis="0 0 1" range="-0.3 0.3"/>
+                <joint name="r_index_mcp_flex" class="finger_joint" axis="0 1 0" range="-0.2 1.57"/>
+                <geom name="r_index_prox" class="finger_geom" fromto="0 0 0 0.032 0 0" size="0.007"/>
+                <body name="r_index_pip" pos="0.032 0 0">
+                  <joint name="r_index_pip_flex" class="finger_joint" axis="0 1 0" range="0 1.8"/>
+                  <geom name="r_index_mid" class="finger_geom" fromto="0 0 0 0.022 0 0" size="0.006"/>
+                  <body name="r_index_dip" pos="0.022 0 0">
+                    <joint name="r_index_dip_flex" class="finger_joint" axis="0 1 0" range="0 1.3"/>
+                    <geom name="r_index_dist" class="finger_geom" fromto="0 0 0 0.018 0 0" size="0.0055"/>
+                    <body name="r_index_tip" pos="0.018 0 0">
+                      <geom name="r_index_tip_geom" class="fingertip_geom" size="0.006"/>
+                      <site name="r_index_touch" pos="0 0 0" size="0.006" rgba="0 0.8 0 0.3"/>
+                    </body>
+                  </body>
+                </body>
+              </body>
+              <body name="r_middle_mcp_base" pos="0.038 -0.005 0.008">
+                <joint name="r_middle_abd" class="finger_joint" axis="0 0 1" range="-0.2 0.2"/>
+                <joint name="r_middle_mcp_flex" class="finger_joint" axis="0 1 0" range="-0.2 1.57"/>
+                <geom name="r_middle_prox" class="finger_geom" fromto="0 0 0 0.035 0 0" size="0.007"/>
+                <body name="r_middle_pip" pos="0.035 0 0">
+                  <joint name="r_middle_pip_flex" class="finger_joint" axis="0 1 0" range="0 1.8"/>
+                  <geom name="r_middle_mid" class="finger_geom" fromto="0 0 0 0.025 0 0" size="0.006"/>
+                  <body name="r_middle_dip" pos="0.025 0 0">
+                    <joint name="r_middle_dip_flex" class="finger_joint" axis="0 1 0" range="0 1.3"/>
+                    <geom name="r_middle_dist" class="finger_geom" fromto="0 0 0 0.018 0 0" size="0.0055"/>
+                    <body name="r_middle_tip" pos="0.018 0 0">
+                      <geom name="r_middle_tip_geom" class="fingertip_geom" size="0.006"/>
+                      <site name="r_middle_touch" pos="0 0 0" size="0.006" rgba="0 0.8 0 0.3"/>
+                    </body>
+                  </body>
+                </body>
+              </body>
+              <body name="r_ring_mcp_base" pos="0.035 0.012 0.008" euler="0 0 0.1">
+                <joint name="r_ring_abd" class="finger_joint" axis="0 0 1" range="-0.2 0.2"/>
+                <joint name="r_ring_mcp_flex" class="finger_joint" axis="0 1 0" range="-0.2 1.57"/>
+                <geom name="r_ring_prox" class="finger_geom" fromto="0 0 0 0.030 0 0" size="0.0065"/>
+                <body name="r_ring_pip" pos="0.030 0 0">
+                  <joint name="r_ring_pip_flex" class="finger_joint" axis="0 1 0" range="0 1.8"/>
+                  <geom name="r_ring_mid" class="finger_geom" fromto="0 0 0 0.022 0 0" size="0.006"/>
+                  <body name="r_ring_dip" pos="0.022 0 0">
+                    <joint name="r_ring_dip_flex" class="finger_joint" axis="0 1 0" range="0 1.3"/>
+                    <geom name="r_ring_dist" class="finger_geom" fromto="0 0 0 0.016 0 0" size="0.0055"/>
+                    <body name="r_ring_tip" pos="0.016 0 0">
+                      <geom name="r_ring_tip_geom" class="fingertip_geom" size="0.006"/>
+                      <site name="r_ring_touch" pos="0 0 0" size="0.006" rgba="0 0.8 0 0.3"/>
+                    </body>
+                  </body>
+                </body>
+              </body>
+              <body name="r_little_mcp_base" pos="0.030 0.028 0.006" euler="0 0 0.2">
+                <joint name="r_little_abd" class="finger_joint" axis="0 0 1" range="-0.3 0.3"/>
+                <joint name="r_little_mcp_flex" class="finger_joint" axis="0 1 0" range="-0.2 1.57"/>
+                <geom name="r_little_prox" class="finger_geom" fromto="0 0 0 0.025 0 0" size="0.006"/>
+                <body name="r_little_pip" pos="0.025 0 0">
+                  <joint name="r_little_pip_flex" class="finger_joint" axis="0 1 0" range="0 1.8"/>
+                  <geom name="r_little_mid" class="finger_geom" fromto="0 0 0 0.018 0 0" size="0.0055"/>
+                  <body name="r_little_dip" pos="0.018 0 0">
+                    <joint name="r_little_dip_flex" class="finger_joint" axis="0 1 0" range="0 1.3"/>
+                    <geom name="r_little_dist" class="finger_geom" fromto="0 0 0 0.014 0 0" size="0.005"/>
+                    <body name="r_little_tip" pos="0.014 0 0">
+                      <geom name="r_little_tip_geom" class="fingertip_geom" size="0.005"/>
+                      <site name="r_little_touch" pos="0 0 0" size="0.005" rgba="0 0.8 0 0.3"/>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <!-- ═══════════════ LEFT ARM (7-DOF) — Mirror of Right ═══════════════ -->
+      <body name="left_shoulder_base" pos="-0.12 0.03 0.03">
+        <geom name="l_shoulder_housing" type="sphere" size="0.04" material="robot_mat"/>
+        <joint name="l_shoulder_yaw" class="arm_joint" axis="0 0 1" range="-2.0 2.0"/>
+        <joint name="l_shoulder_pitch" class="arm_joint" axis="0 1 0" range="-1.57 2.5"/>
+        <joint name="l_shoulder_roll" class="arm_joint" axis="1 0 0" range="-1.57 1.57"/>
+        <geom name="l_upper_arm" type="capsule" fromto="0 0 0 -0.18 0 0"
+              size="0.025" material="robot_mat"/>
+
+        <body name="left_elbow" pos="-0.18 0 0">
+          <geom name="l_elbow_joint_geom" type="sphere" size="0.028" material="robot_mat"/>
+          <joint name="l_elbow_flex" class="arm_joint" axis="0 1 0" range="0 2.5"/>
+          <geom name="l_forearm" type="capsule" fromto="0 0 0 -0.16 0 0"
+                size="0.022" material="robot_mat"/>
+
+          <body name="left_wrist" pos="-0.16 0 0">
+            <geom name="l_wrist_geom" type="sphere" size="0.022" material="robot_mat"/>
+            <joint name="l_wrist_pronation" class="arm_joint" axis="1 0 0" range="-1.57 1.57" damping="5.0"/>
+            <joint name="l_wrist_flex" class="arm_joint" axis="0 1 0" range="-1.0 1.0" damping="5.0"/>
+            <joint name="l_wrist_dev" class="arm_joint" axis="0 0 1" range="-0.5 0.5" damping="5.0"/>
+
+            <body name="l_palm" pos="-0.03 0 0">
+              <geom name="l_palm_geom" type="box" size="0.035 0.04 0.012" material="skin_mat"/>
+              <site name="l_palm_touch" pos="0 0 0.012" size="0.02 0.03 0.001" type="box" rgba="0 0.8 0 0.3"/>
+              <body name="l_thumb_cmc" pos="-0.02 -0.035 0.005" euler="0 -0.3 0.8">
+                <geom name="l_thumb_cmc_geom" class="finger_geom" fromto="0 0 0 -0.025 0 0" size="0.009"/>
+                <joint name="l_thumb_cmc_flex" class="finger_joint" axis="0 1 0" range="-0.2 1.4"/>
+                <joint name="l_thumb_cmc_abd" class="finger_joint" axis="0 0 1" range="-0.5 0.5"/>
+                <body name="l_thumb_mcp" pos="-0.025 0 0">
+                  <geom name="l_thumb_mcp_geom" class="finger_geom" fromto="0 0 0 -0.022 0 0" size="0.008"/>
+                  <joint name="l_thumb_mcp_flex" class="finger_joint" axis="0 1 0" range="-0.1 1.2"/>
+                  <body name="l_thumb_ip" pos="-0.022 0 0">
+                    <geom name="l_thumb_ip_geom" class="finger_geom" fromto="0 0 0 -0.018 0 0" size="0.007"/>
+                    <joint name="l_thumb_ip_flex" class="finger_joint" axis="0 1 0" range="-0.1 1.0"/>
+                    <body name="l_thumb_tip" pos="-0.018 0 0">
+                      <geom name="l_thumb_tip_geom" class="fingertip_geom" size="0.008"/>
+                      <site name="l_thumb_touch" pos="0 0 0" size="0.008" rgba="0 0.8 0 0.3"/>
+                    </body>
+                  </body>
+                </body>
+              </body>
+              <body name="l_index_mcp_base" pos="-0.035 -0.022 0.008" euler="0 0 0.1">
+                <joint name="l_index_abd" class="finger_joint" axis="0 0 1" range="-0.3 0.3"/>
+                <joint name="l_index_mcp_flex" class="finger_joint" axis="0 1 0" range="-0.2 1.57"/>
+                <geom name="l_index_prox" class="finger_geom" fromto="0 0 0 -0.032 0 0" size="0.007"/>
+                <body name="l_index_pip" pos="-0.032 0 0">
+                  <joint name="l_index_pip_flex" class="finger_joint" axis="0 1 0" range="0 1.8"/>
+                  <geom name="l_index_mid" class="finger_geom" fromto="0 0 0 -0.022 0 0" size="0.006"/>
+                  <body name="l_index_dip" pos="-0.022 0 0">
+                    <joint name="l_index_dip_flex" class="finger_joint" axis="0 1 0" range="0 1.3"/>
+                    <geom name="l_index_dist" class="finger_geom" fromto="0 0 0 -0.018 0 0" size="0.0055"/>
+                    <body name="l_index_tip" pos="-0.018 0 0">
+                      <geom name="l_index_tip_geom" class="fingertip_geom" size="0.006"/>
+                      <site name="l_index_touch" pos="0 0 0" size="0.006" rgba="0 0.8 0 0.3"/>
+                    </body>
+                  </body>
+                </body>
+              </body>
+              <body name="l_middle_mcp_base" pos="-0.038 -0.005 0.008">
+                <joint name="l_middle_abd" class="finger_joint" axis="0 0 1" range="-0.2 0.2"/>
+                <joint name="l_middle_mcp_flex" class="finger_joint" axis="0 1 0" range="-0.2 1.57"/>
+                <geom name="l_middle_prox" class="finger_geom" fromto="0 0 0 -0.035 0 0" size="0.007"/>
+                <body name="l_middle_pip" pos="-0.035 0 0">
+                  <joint name="l_middle_pip_flex" class="finger_joint" axis="0 1 0" range="0 1.8"/>
+                  <geom name="l_middle_mid" class="finger_geom" fromto="0 0 0 -0.025 0 0" size="0.006"/>
+                  <body name="l_middle_dip" pos="-0.025 0 0">
+                    <joint name="l_middle_dip_flex" class="finger_joint" axis="0 1 0" range="0 1.3"/>
+                    <geom name="l_middle_dist" class="finger_geom" fromto="0 0 0 -0.018 0 0" size="0.0055"/>
+                    <body name="l_middle_tip" pos="-0.018 0 0">
+                      <geom name="l_middle_tip_geom" class="fingertip_geom" size="0.006"/>
+                      <site name="l_middle_touch" pos="0 0 0" size="0.006" rgba="0 0.8 0 0.3"/>
+                    </body>
+                  </body>
+                </body>
+              </body>
+              <body name="l_ring_mcp_base" pos="-0.035 0.012 0.008" euler="0 0 -0.1">
+                <joint name="l_ring_abd" class="finger_joint" axis="0 0 1" range="-0.2 0.2"/>
+                <joint name="l_ring_mcp_flex" class="finger_joint" axis="0 1 0" range="-0.2 1.57"/>
+                <geom name="l_ring_prox" class="finger_geom" fromto="0 0 0 -0.030 0 0" size="0.0065"/>
+                <body name="l_ring_pip" pos="-0.030 0 0">
+                  <joint name="l_ring_pip_flex" class="finger_joint" axis="0 1 0" range="0 1.8"/>
+                  <geom name="l_ring_mid" class="finger_geom" fromto="0 0 0 -0.022 0 0" size="0.006"/>
+                  <body name="l_ring_dip" pos="-0.022 0 0">
+                    <joint name="l_ring_dip_flex" class="finger_joint" axis="0 1 0" range="0 1.3"/>
+                    <geom name="l_ring_dist" class="finger_geom" fromto="0 0 0 -0.016 0 0" size="0.0055"/>
+                    <body name="l_ring_tip" pos="-0.016 0 0">
+                      <geom name="l_ring_tip_geom" class="fingertip_geom" size="0.006"/>
+                      <site name="l_ring_touch" pos="0 0 0" size="0.006" rgba="0 0.8 0 0.3"/>
+                    </body>
+                  </body>
+                </body>
+              </body>
+              <body name="l_little_mcp_base" pos="-0.030 0.028 0.006" euler="0 0 -0.2">
+                <joint name="l_little_abd" class="finger_joint" axis="0 0 1" range="-0.3 0.3"/>
+                <joint name="l_little_mcp_flex" class="finger_joint" axis="0 1 0" range="-0.2 1.57"/>
+                <geom name="l_little_prox" class="finger_geom" fromto="0 0 0 -0.025 0 0" size="0.006"/>
+                <body name="l_little_pip" pos="-0.025 0 0">
+                  <joint name="l_little_pip_flex" class="finger_joint" axis="0 1 0" range="0 1.8"/>
+                  <geom name="l_little_mid" class="finger_geom" fromto="0 0 0 -0.018 0 0" size="0.0055"/>
+                  <body name="l_little_dip" pos="-0.018 0 0">
+                    <joint name="l_little_dip_flex" class="finger_joint" axis="0 1 0" range="0 1.3"/>
+                    <geom name="l_little_dist" class="finger_geom" fromto="0 0 0 -0.014 0 0" size="0.005"/>
+                    <body name="l_little_tip" pos="-0.014 0 0">
+                      <geom name="l_little_tip_geom" class="fingertip_geom" size="0.005"/>
+                      <site name="l_little_touch" pos="0 0 0" size="0.005" rgba="0 0.8 0 0.3"/>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body> <!-- end robot_base -->
+
+    <!-- ═══════════════════ SURGICAL NEEDLE ═══════════════════ -->
+    <!-- Needle resting on instrument tray — arms animate the suturing procedure -->
+    <body name="needle" pos="0.35 0 0.81">
+      <!-- Curved needle — arc of small capsules -->
+      <geom name="needle_seg_1" class="needle_geom" fromto="0 0 0 0.008 0 0.003" size="0.001"
+            material="needle_mat"/>
+      <geom name="needle_seg_2" class="needle_geom" fromto="0.008 0 0.003 0.014 0 0.008" size="0.001"
+            material="needle_mat"/>
+      <geom name="needle_seg_3" class="needle_geom" fromto="0.014 0 0.008 0.018 0 0.014" size="0.001"
+            material="needle_mat"/>
+      <geom name="needle_seg_4" class="needle_geom" fromto="0.018 0 0.014 0.019 0 0.021" size="0.001"
+            material="needle_mat"/>
+      <geom name="needle_seg_5" class="needle_geom" fromto="0.019 0 0.021 0.017 0 0.027" size="0.001"
+            material="needle_mat"/>
+      <geom name="needle_seg_6" class="needle_geom" fromto="0.017 0 0.027 0.012 0 0.031" size="0.001"
+            material="needle_mat"/>
+      <geom name="needle_seg_7" class="needle_geom" fromto="0.012 0 0.031 0.006 0 0.033" size="0.001"
+            material="needle_mat"/>
+      <geom name="needle_seg_8" class="needle_geom" fromto="0.006 0 0.033 0 0 0.032" size="0.001"
+            material="needle_mat"/>
+      <!-- Needle tip -->
+      <geom name="needle_tip" type="sphere" pos="0 0 0" size="0.0012"
+            material="needle_mat" contype="0" conaffinity="0"/>
+      <!-- Needle eye -->
+      <site name="needle_eye" pos="0 0 0.032" size="0.002" rgba="1 1 0 0.8"/>
+      <!-- Grip site -->
+      <site name="needle_grip" pos="0.015 0 0.020" size="0.005" rgba="1 0.3 0.3 0.5"/>
+
+      <!-- ═══════ SUTURE THREAD (rigid, natural drape shape) ═══════ -->
+      <body name="thread_anchor" pos="0 0 0.032">
+        <geom name="thread_seg_0" class="thread_geom" fromto="0 0 0 0.012 0 0" size="0.0008"
+              material="thread_mat" contype="0" conaffinity="0"/>
+        <geom name="thread_seg_1" class="thread_geom" fromto="0.012 0 0 0.024 -0.002 -0.004" size="0.0008"
+              material="thread_mat" contype="0" conaffinity="0"/>
+        <geom name="thread_seg_2" class="thread_geom" fromto="0.024 -0.002 -0.004 0.035 -0.003 -0.010" size="0.0008"
+              material="thread_mat" contype="0" conaffinity="0"/>
+        <geom name="thread_seg_3" class="thread_geom" fromto="0.035 -0.003 -0.010 0.044 -0.002 -0.018" size="0.0008"
+              material="thread_mat" contype="0" conaffinity="0"/>
+        <geom name="thread_seg_4" class="thread_geom" fromto="0.044 -0.002 -0.018 0.050 0 -0.027" size="0.0008"
+              material="thread_mat" contype="0" conaffinity="0"/>
+        <geom name="thread_seg_5" class="thread_geom" fromto="0.050 0 -0.027 0.054 0.002 -0.032" size="0.0008"
+              material="thread_mat" contype="0" conaffinity="0"/>
+        <site name="thread_end" pos="0.054 0.002 -0.032" size="0.001"
+              rgba="0.1 0.3 0.8 1"/>
+      </body>
+    </body> <!-- end needle -->
+  </worldbody>
+
+  <!-- ═══════════════════ TENDONS ═══════════════════ -->
+  <!-- PIP-DIP coupling: DIP follows PIP at ~0.67 ratio (anatomically accurate) -->
+  <tendon>
+    <!-- Right hand PIP-DIP coupling -->
+    <fixed name="r_index_coupling" limited="true" range="-0.5 2.5">
+      <joint joint="r_index_pip_flex" coef="1"/>
+      <joint joint="r_index_dip_flex" coef="-0.67"/>
+    </fixed>
+    <fixed name="r_middle_coupling" limited="true" range="-0.5 2.5">
+      <joint joint="r_middle_pip_flex" coef="1"/>
+      <joint joint="r_middle_dip_flex" coef="-0.67"/>
+    </fixed>
+    <fixed name="r_ring_coupling" limited="true" range="-0.5 2.5">
+      <joint joint="r_ring_pip_flex" coef="1"/>
+      <joint joint="r_ring_dip_flex" coef="-0.67"/>
+    </fixed>
+    <fixed name="r_little_coupling" limited="true" range="-0.5 2.5">
+      <joint joint="r_little_pip_flex" coef="1"/>
+      <joint joint="r_little_dip_flex" coef="-0.67"/>
+    </fixed>
+
+    <!-- Left hand PIP-DIP coupling -->
+    <fixed name="l_index_coupling" limited="true" range="-0.5 2.5">
+      <joint joint="l_index_pip_flex" coef="1"/>
+      <joint joint="l_index_dip_flex" coef="-0.67"/>
+    </fixed>
+    <fixed name="l_middle_coupling" limited="true" range="-0.5 2.5">
+      <joint joint="l_middle_pip_flex" coef="1"/>
+      <joint joint="l_middle_dip_flex" coef="-0.67"/>
+    </fixed>
+    <fixed name="l_ring_coupling" limited="true" range="-0.5 2.5">
+      <joint joint="l_ring_pip_flex" coef="1"/>
+      <joint joint="l_ring_dip_flex" coef="-0.67"/>
+    </fixed>
+    <fixed name="l_little_coupling" limited="true" range="-0.5 2.5">
+      <joint joint="l_little_pip_flex" coef="1"/>
+      <joint joint="l_little_dip_flex" coef="-0.67"/>
+    </fixed>
+  </tendon>
+
+  <!-- ═══════════════════ EQUALITY CONSTRAINTS ═══════════════════ -->
+  <!-- Thread is physically attached to needle (child body), no weld needed -->
+  <equality>
+  </equality>
+
+  <!-- ═══════════════════ CONTACT EXCLUSIONS ═══════════════════ -->
+  <contact>
+    <!-- Exclude self-collisions between adjacent finger links (right hand) -->
+    <exclude body1="r_palm" body2="r_thumb_cmc"/>
+    <exclude body1="r_palm" body2="r_index_mcp_base"/>
+    <exclude body1="r_palm" body2="r_middle_mcp_base"/>
+    <exclude body1="r_palm" body2="r_ring_mcp_base"/>
+    <exclude body1="r_palm" body2="r_little_mcp_base"/>
+    <exclude body1="r_thumb_cmc" body2="r_thumb_mcp"/>
+    <exclude body1="r_thumb_mcp" body2="r_thumb_ip"/>
+    <exclude body1="r_index_mcp_base" body2="r_index_pip"/>
+    <exclude body1="r_index_pip" body2="r_index_dip"/>
+    <exclude body1="r_middle_mcp_base" body2="r_middle_pip"/>
+    <exclude body1="r_middle_pip" body2="r_middle_dip"/>
+    <exclude body1="r_ring_mcp_base" body2="r_ring_pip"/>
+    <exclude body1="r_ring_pip" body2="r_ring_dip"/>
+    <exclude body1="r_little_mcp_base" body2="r_little_pip"/>
+    <exclude body1="r_little_pip" body2="r_little_dip"/>
+
+    <!-- Exclude self-collisions between adjacent finger links (left hand) -->
+    <exclude body1="l_palm" body2="l_thumb_cmc"/>
+    <exclude body1="l_palm" body2="l_index_mcp_base"/>
+    <exclude body1="l_palm" body2="l_middle_mcp_base"/>
+    <exclude body1="l_palm" body2="l_ring_mcp_base"/>
+    <exclude body1="l_palm" body2="l_little_mcp_base"/>
+    <exclude body1="l_thumb_cmc" body2="l_thumb_mcp"/>
+    <exclude body1="l_thumb_mcp" body2="l_thumb_ip"/>
+    <exclude body1="l_index_mcp_base" body2="l_index_pip"/>
+    <exclude body1="l_index_pip" body2="l_index_dip"/>
+    <exclude body1="l_middle_mcp_base" body2="l_middle_pip"/>
+    <exclude body1="l_middle_pip" body2="l_middle_dip"/>
+    <exclude body1="l_ring_mcp_base" body2="l_ring_pip"/>
+    <exclude body1="l_ring_pip" body2="l_ring_dip"/>
+    <exclude body1="l_little_mcp_base" body2="l_little_pip"/>
+    <exclude body1="l_little_pip" body2="l_little_dip"/>
+
+    <!-- Exclude arm-to-palm collisions -->
+    <exclude body1="right_wrist" body2="r_palm"/>
+    <exclude body1="left_wrist" body2="l_palm"/>
+  </contact>
+
+  <!-- ═══════════════════ SENSORS ═══════════════════ -->
+  <sensor>
+    <!-- Joint position sensors (arms) -->
+    <jointpos name="r_shoulder_yaw_pos" joint="r_shoulder_yaw"/>
+    <jointpos name="r_shoulder_pitch_pos" joint="r_shoulder_pitch"/>
+    <jointpos name="r_shoulder_roll_pos" joint="r_shoulder_roll"/>
+    <jointpos name="r_elbow_flex_pos" joint="r_elbow_flex"/>
+    <jointpos name="r_wrist_pronation_pos" joint="r_wrist_pronation"/>
+    <jointpos name="r_wrist_flex_pos" joint="r_wrist_flex"/>
+    <jointpos name="r_wrist_dev_pos" joint="r_wrist_dev"/>
+
+    <jointpos name="l_shoulder_yaw_pos" joint="l_shoulder_yaw"/>
+    <jointpos name="l_shoulder_pitch_pos" joint="l_shoulder_pitch"/>
+    <jointpos name="l_shoulder_roll_pos" joint="l_shoulder_roll"/>
+    <jointpos name="l_elbow_flex_pos" joint="l_elbow_flex"/>
+    <jointpos name="l_wrist_pronation_pos" joint="l_wrist_pronation"/>
+    <jointpos name="l_wrist_flex_pos" joint="l_wrist_flex"/>
+    <jointpos name="l_wrist_dev_pos" joint="l_wrist_dev"/>
+
+    <!-- Joint velocity sensors (arms) -->
+    <jointvel name="r_shoulder_yaw_vel" joint="r_shoulder_yaw"/>
+    <jointvel name="r_elbow_flex_vel" joint="r_elbow_flex"/>
+    <jointvel name="l_shoulder_yaw_vel" joint="l_shoulder_yaw"/>
+    <jointvel name="l_elbow_flex_vel" joint="l_elbow_flex"/>
+
+    <!-- Touch sensors (fingertips) -->
+    <touch name="r_thumb_contact" site="r_thumb_touch"/>
+    <touch name="r_index_contact" site="r_index_touch"/>
+    <touch name="r_middle_contact" site="r_middle_touch"/>
+    <touch name="r_ring_contact" site="r_ring_touch"/>
+    <touch name="r_little_contact" site="r_little_touch"/>
+    <touch name="r_palm_contact" site="r_palm_touch"/>
+
+    <touch name="l_thumb_contact" site="l_thumb_touch"/>
+    <touch name="l_index_contact" site="l_index_touch"/>
+    <touch name="l_middle_contact" site="l_middle_touch"/>
+    <touch name="l_ring_contact" site="l_ring_touch"/>
+    <touch name="l_little_contact" site="l_little_touch"/>
+    <touch name="l_palm_contact" site="l_palm_touch"/>
+
+    <!-- Needle position tracking -->
+    <framepos name="needle_pos" objtype="body" objname="needle"/>
+    <framequat name="needle_quat" objtype="body" objname="needle"/>
+  </sensor>
+
+  <!-- ═══════════════════ ACTUATORS ═══════════════════ -->
+  <actuator>
+    <!-- ─── Right Arm (7 actuators) ─── -->
+    <position name="r_shoulder_yaw_act" joint="r_shoulder_yaw" class="arm_actuator"
+              ctrlrange="-2.0 2.0"/>
+    <position name="r_shoulder_pitch_act" joint="r_shoulder_pitch" class="arm_actuator"
+              ctrlrange="-1.57 2.5"/>
+    <position name="r_shoulder_roll_act" joint="r_shoulder_roll" class="arm_actuator"
+              ctrlrange="-1.57 1.57"/>
+    <position name="r_elbow_flex_act" joint="r_elbow_flex" class="arm_actuator"
+              ctrlrange="0 2.5"/>
+    <position name="r_wrist_pronation_act" joint="r_wrist_pronation" class="arm_actuator"
+              ctrlrange="-1.57 1.57" kp="50"/>
+    <position name="r_wrist_flex_act" joint="r_wrist_flex" class="arm_actuator"
+              ctrlrange="-1.0 1.0" kp="50"/>
+    <position name="r_wrist_dev_act" joint="r_wrist_dev" class="arm_actuator"
+              ctrlrange="-0.5 0.5" kp="50"/>
+
+    <!-- ─── Right Hand (20 actuators) ─── -->
+    <!-- Thumb -->
+    <position name="r_thumb_cmc_flex_act" joint="r_thumb_cmc_flex" class="finger_actuator"
+              ctrlrange="-0.2 1.4"/>
+    <position name="r_thumb_cmc_abd_act" joint="r_thumb_cmc_abd" class="finger_actuator"
+              ctrlrange="-0.5 0.5"/>
+    <position name="r_thumb_mcp_flex_act" joint="r_thumb_mcp_flex" class="finger_actuator"
+              ctrlrange="-0.1 1.2"/>
+    <position name="r_thumb_ip_flex_act" joint="r_thumb_ip_flex" class="finger_actuator"
+              ctrlrange="-0.1 1.0"/>
+    <!-- Index -->
+    <position name="r_index_abd_act" joint="r_index_abd" class="finger_actuator"
+              ctrlrange="-0.3 0.3"/>
+    <position name="r_index_mcp_flex_act" joint="r_index_mcp_flex" class="finger_actuator"
+              ctrlrange="-0.2 1.57"/>
+    <position name="r_index_pip_flex_act" joint="r_index_pip_flex" class="finger_actuator"
+              ctrlrange="0 1.8"/>
+    <position name="r_index_dip_flex_act" joint="r_index_dip_flex" class="finger_actuator"
+              ctrlrange="0 1.3"/>
+    <!-- Middle -->
+    <position name="r_middle_abd_act" joint="r_middle_abd" class="finger_actuator"
+              ctrlrange="-0.2 0.2"/>
+    <position name="r_middle_mcp_flex_act" joint="r_middle_mcp_flex" class="finger_actuator"
+              ctrlrange="-0.2 1.57"/>
+    <position name="r_middle_pip_flex_act" joint="r_middle_pip_flex" class="finger_actuator"
+              ctrlrange="0 1.8"/>
+    <position name="r_middle_dip_flex_act" joint="r_middle_dip_flex" class="finger_actuator"
+              ctrlrange="0 1.3"/>
+    <!-- Ring -->
+    <position name="r_ring_abd_act" joint="r_ring_abd" class="finger_actuator"
+              ctrlrange="-0.2 0.2"/>
+    <position name="r_ring_mcp_flex_act" joint="r_ring_mcp_flex" class="finger_actuator"
+              ctrlrange="-0.2 1.57"/>
+    <position name="r_ring_pip_flex_act" joint="r_ring_pip_flex" class="finger_actuator"
+              ctrlrange="0 1.8"/>
+    <position name="r_ring_dip_flex_act" joint="r_ring_dip_flex" class="finger_actuator"
+              ctrlrange="0 1.3"/>
+    <!-- Little -->
+    <position name="r_little_abd_act" joint="r_little_abd" class="finger_actuator"
+              ctrlrange="-0.3 0.3"/>
+    <position name="r_little_mcp_flex_act" joint="r_little_mcp_flex" class="finger_actuator"
+              ctrlrange="-0.2 1.57"/>
+    <position name="r_little_pip_flex_act" joint="r_little_pip_flex" class="finger_actuator"
+              ctrlrange="0 1.8"/>
+    <position name="r_little_dip_flex_act" joint="r_little_dip_flex" class="finger_actuator"
+              ctrlrange="0 1.3"/>
+
+    <!-- ─── Left Arm (7 actuators) ─── -->
+    <position name="l_shoulder_yaw_act" joint="l_shoulder_yaw" class="arm_actuator"
+              ctrlrange="-2.0 2.0"/>
+    <position name="l_shoulder_pitch_act" joint="l_shoulder_pitch" class="arm_actuator"
+              ctrlrange="-1.57 2.5"/>
+    <position name="l_shoulder_roll_act" joint="l_shoulder_roll" class="arm_actuator"
+              ctrlrange="-1.57 1.57"/>
+    <position name="l_elbow_flex_act" joint="l_elbow_flex" class="arm_actuator"
+              ctrlrange="0 2.5"/>
+    <position name="l_wrist_pronation_act" joint="l_wrist_pronation" class="arm_actuator"
+              ctrlrange="-1.57 1.57" kp="50"/>
+    <position name="l_wrist_flex_act" joint="l_wrist_flex" class="arm_actuator"
+              ctrlrange="-1.0 1.0" kp="50"/>
+    <position name="l_wrist_dev_act" joint="l_wrist_dev" class="arm_actuator"
+              ctrlrange="-0.5 0.5" kp="50"/>
+
+    <!-- ─── Left Hand (20 actuators) ─── -->
+    <!-- Thumb -->
+    <position name="l_thumb_cmc_flex_act" joint="l_thumb_cmc_flex" class="finger_actuator"
+              ctrlrange="-0.2 1.4"/>
+    <position name="l_thumb_cmc_abd_act" joint="l_thumb_cmc_abd" class="finger_actuator"
+              ctrlrange="-0.5 0.5"/>
+    <position name="l_thumb_mcp_flex_act" joint="l_thumb_mcp_flex" class="finger_actuator"
+              ctrlrange="-0.1 1.2"/>
+    <position name="l_thumb_ip_flex_act" joint="l_thumb_ip_flex" class="finger_actuator"
+              ctrlrange="-0.1 1.0"/>
+    <!-- Index -->
+    <position name="l_index_abd_act" joint="l_index_abd" class="finger_actuator"
+              ctrlrange="-0.3 0.3"/>
+    <position name="l_index_mcp_flex_act" joint="l_index_mcp_flex" class="finger_actuator"
+              ctrlrange="-0.2 1.57"/>
+    <position name="l_index_pip_flex_act" joint="l_index_pip_flex" class="finger_actuator"
+              ctrlrange="0 1.8"/>
+    <position name="l_index_dip_flex_act" joint="l_index_dip_flex" class="finger_actuator"
+              ctrlrange="0 1.3"/>
+    <!-- Middle -->
+    <position name="l_middle_abd_act" joint="l_middle_abd" class="finger_actuator"
+              ctrlrange="-0.2 0.2"/>
+    <position name="l_middle_mcp_flex_act" joint="l_middle_mcp_flex" class="finger_actuator"
+              ctrlrange="-0.2 1.57"/>
+    <position name="l_middle_pip_flex_act" joint="l_middle_pip_flex" class="finger_actuator"
+              ctrlrange="0 1.8"/>
+    <position name="l_middle_dip_flex_act" joint="l_middle_dip_flex" class="finger_actuator"
+              ctrlrange="0 1.3"/>
+    <!-- Ring -->
+    <position name="l_ring_abd_act" joint="l_ring_abd" class="finger_actuator"
+              ctrlrange="-0.2 0.2"/>
+    <position name="l_ring_mcp_flex_act" joint="l_ring_mcp_flex" class="finger_actuator"
+              ctrlrange="-0.2 1.57"/>
+    <position name="l_ring_pip_flex_act" joint="l_ring_pip_flex" class="finger_actuator"
+              ctrlrange="0 1.8"/>
+    <position name="l_ring_dip_flex_act" joint="l_ring_dip_flex" class="finger_actuator"
+              ctrlrange="0 1.3"/>
+    <!-- Little -->
+    <position name="l_little_abd_act" joint="l_little_abd" class="finger_actuator"
+              ctrlrange="-0.3 0.3"/>
+    <position name="l_little_mcp_flex_act" joint="l_little_mcp_flex" class="finger_actuator"
+              ctrlrange="-0.2 1.57"/>
+    <position name="l_little_pip_flex_act" joint="l_little_pip_flex" class="finger_actuator"
+              ctrlrange="0 1.8"/>
+    <position name="l_little_dip_flex_act" joint="l_little_dip_flex" class="finger_actuator"
+              ctrlrange="0 1.3"/>
+  </actuator>
+
+  <!-- ═══════════════════ KEYFRAMES ═══════════════════ -->
+  <!-- Initial pose with arms folded up to balance gravity -->
+  <keyframe>
+    <key name="home" qpos="
+      0.3 1.0 0.0 1.2 0.0 0.0 0.0
+      0.0 0.0 0.0 0.0
+      0.0 0.0 0.0 0.0
+      0.0 0.0 0.0 0.0
+      0.0 0.0 0.0 0.0
+      0.0 0.0 0.0 0.0
+      -0.3 1.0 0.0 1.2 0.0 0.0 0.0
+      0.0 0.0 0.0 0.0
+      0.0 0.0 0.0 0.0
+      0.0 0.0 0.0 0.0
+      0.0 0.0 0.0 0.0
+      0.0 0.0 0.0 0.0
+    " ctrl="
+      0.3 1.0 0.0 1.2 0.0 0.0 0.0
+      0.0 0.0 0.0 0.0
+      0.0 0.0 0.0 0.0
+      0.0 0.0 0.0 0.0
+      0.0 0.0 0.0 0.0
+      0.0 0.0 0.0 0.0
+      -0.3 1.0 0.0 1.2 0.0 0.0 0.0
+      0.0 0.0 0.0 0.0
+      0.0 0.0 0.0 0.0
+      0.0 0.0 0.0 0.0
+      0.0 0.0 0.0 0.0
+      0.0 0.0 0.0 0.0
+    "/>
+  </keyframe>
+</mujoco>

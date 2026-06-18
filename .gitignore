@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# MuJoCo
+MUJOCO_LOG.TXT
+
+# Recording artifacts — frames are large
+frames/
+
+# Videos — too large for git
+*.mp4
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

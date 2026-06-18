@@ -1,0 +1,381 @@
+"""
+PROMETHEUS Controller — Multi-level control system for surgical suturing.
+
+Architecture:
+  1. Task Planner (high-level) — Finite state machine for suturing procedure
+  2. Trajectory Generator (mid-level) — Smooth waypoint interpolation
+  3. PD Controller (low-level) — Per-joint position control
+
+The controller orchestrates both arms:
+  - Right arm: Primary manipulator (grasps and drives the needle)
+  - Left arm: Assistant (holds/retracts tissue, manages thread)
+"""
+
+import numpy as np
+from enum import Enum, auto
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+
+from .config import (
+    ControllerConfig, SuturingConfig, HandPoses,
+    RIGHT_ARM_JOINTS, LEFT_ARM_JOINTS,
+    RIGHT_HAND_JOINTS, LEFT_HAND_JOINTS,
+    RIGHT_ARM_ACTUATORS, LEFT_ARM_ACTUATORS,
+    RIGHT_HAND_ACTUATORS, LEFT_HAND_ACTUATORS,
+)
+from .utils import smooth_step, lerp, clamp
+
+
+# ═══════════════════ TASK STATE MACHINE ═══════════════════
+
+class TaskState(Enum):
+    """Surgical suturing task states."""
+    IDLE = auto()
+    HOME_POSITION = auto()
+    APPROACH_NEEDLE = auto()
+    GRASP_NEEDLE = auto()
+    LIFT_NEEDLE = auto()
+    POSITION_LEFT_HAND = auto()
+    APPROACH_TISSUE = auto()
+    PIERCE_TISSUE = auto()
+    DRIVE_THROUGH = auto()
+    EMERGE_OTHER_SIDE = auto()
+    REGRAB_NEEDLE = auto()
+    PULL_THREAD = auto()
+    TENSION_THREAD = auto()
+    NEXT_STITCH = auto()
+    COMPLETE = auto()
+
+
+# ═══════════════════ WAYPOINT TARGETS ═══════════════════
+
+@dataclass
+class ArmTarget:
+    """Target configuration for one arm + hand."""
+    arm_positions: np.ndarray    # 7 joint angles for the arm
+    hand_positions: np.ndarray   # 20 joint angles for the hand
+    duration: float              # Time to reach this target (seconds)
+
+
+class SuturingController:
+    """
+    Master controller for the PROMETHEUS surgical suturing robot.
+
+    Manages both arms through a state machine that executes the full
+    suturing procedure: approach → grasp needle → pierce tissue →
+    drive through → pull thread → tension → repeat.
+    """
+
+    def __init__(self, model, data,
+                 controller_config: Optional[ControllerConfig] = None,
+                 suturing_config: Optional[SuturingConfig] = None):
+        """
+        Initialize the suturing controller.
+
+        Args:
+            model: MuJoCo model (mj.MjModel)
+            data: MuJoCo data (mj.MjData)
+            controller_config: Controller tuning parameters
+            suturing_config: Suturing task parameters
+        """
+        self.model = model
+        self.data = data
+        self.config = controller_config or ControllerConfig()
+        self.suturing = suturing_config or SuturingConfig()
+        self.hand_poses = HandPoses()
+
+        # State machine
+        self.state = TaskState.IDLE
+        self.state_start_time = 0.0
+        self.current_stitch_index = 0
+        self.total_stitches = len(self.suturing.suture_points)
+
+        # Resolve actuator indices
+        self._resolve_actuator_ids()
+
+        # Current targets
+        self.right_arm_target = np.zeros(7)
+        self.right_hand_target = np.zeros(20)
+        self.left_arm_target = np.zeros(7)
+        self.left_hand_target = np.zeros(20)
+
+        # Previous targets (for interpolation)
+        self.right_arm_prev = np.zeros(7)
+        self.right_hand_prev = np.zeros(20)
+        self.left_arm_prev = np.zeros(7)
+        self.left_hand_prev = np.zeros(20)
+
+        # State duration
+        self.state_duration = 2.0
+
+        # Teleoperation override
+        self.teleop_active = False
+
+        # Initialize to home position
+        self._set_home_position()
+
+    def _resolve_actuator_ids(self):
+        """Map actuator names to MuJoCo actuator indices."""
+        self.r_arm_act_ids = []
+        for name in RIGHT_ARM_ACTUATORS:
+            try:
+                self.r_arm_act_ids.append(self.model.actuator(name).id)
+            except Exception:
+                pass
+
+        self.r_hand_act_ids = []
+        for name in RIGHT_HAND_ACTUATORS:
+            try:
+                self.r_hand_act_ids.append(self.model.actuator(name).id)
+            except Exception:
+                pass
+
+        self.l_arm_act_ids = []
+        for name in LEFT_ARM_ACTUATORS:
+            try:
+                self.l_arm_act_ids.append(self.model.actuator(name).id)
+            except Exception:
+                pass
+
+        self.l_hand_act_ids = []
+        for name in LEFT_HAND_ACTUATORS:
+            try:
+                self.l_hand_act_ids.append(self.model.actuator(name).id)
+            except Exception:
+                pass
+
+    def _set_home_position(self):
+        """Set initial home position — both arms raised and visible above the table."""
+        # Right arm: shoulder_yaw=0.3 outward, shoulder_pitch=1.0 forward,
+        # elbow_flex=1.2 bent — hand ends up above table center-right
+        self.right_arm_target = np.array([0.3, 1.0, 0.0, 1.2, 0.0, 0.0, 0.0])
+        # Left arm: mirrored — shoulder_yaw=-0.3, same pitch/elbow
+        # This keeps the left arm visible on the other side of the table
+        self.left_arm_target = np.array([-0.3, 1.0, 0.0, 1.2, 0.0, 0.0, 0.0])
+        # Both hands open
+        self.right_hand_target = self._pose_to_array(self.hand_poses.open_hand())
+        self.left_hand_target = self._pose_to_array(self.hand_poses.open_hand())
+
+    def _pose_to_array(self, pose_dict: Dict[str, float]) -> np.ndarray:
+        """Convert a hand pose dict (without prefix) to a numpy array."""
+        keys = [
+            "thumb_cmc_flex", "thumb_cmc_abd", "thumb_mcp_flex", "thumb_ip_flex",
+            "index_abd", "index_mcp_flex", "index_pip_flex", "index_dip_flex",
+            "middle_abd", "middle_mcp_flex", "middle_pip_flex", "middle_dip_flex",
+            "ring_abd", "ring_mcp_flex", "ring_pip_flex", "ring_dip_flex",
+            "little_abd", "little_mcp_flex", "little_pip_flex", "little_dip_flex",
+        ]
+        return np.array([pose_dict.get(k, 0.0) for k in keys])
+
+    def get_simulation_time(self) -> float:
+        """Get current simulation time."""
+        return self.data.time
+
+    def get_state_elapsed(self) -> float:
+        """Get time elapsed in current state."""
+        return self.get_simulation_time() - self.state_start_time
+
+    def get_state_progress(self) -> float:
+        """Get progress through current state [0, 1]."""
+        elapsed = self.get_state_elapsed()
+        if self.state_duration <= 0:
+            return 1.0
+        return min(1.0, elapsed / self.state_duration)
+
+    def transition_to(self, new_state: TaskState, duration: float = 2.0):
+        """Transition to a new task state."""
+        # Save current positions as previous (for interpolation)
+        self.right_arm_prev = self.right_arm_target.copy()
+        self.right_hand_prev = self.right_hand_target.copy()
+        self.left_arm_prev = self.left_arm_target.copy()
+        self.left_hand_prev = self.left_hand_target.copy()
+
+        self.state = new_state
+        self.state_start_time = self.get_simulation_time()
+        self.state_duration = duration
+        print(f"   → {new_state.name} (stitch {self.current_stitch_index + 1}/{self.total_stitches})")
+
+    def start_autonomous(self):
+        """Start the autonomous suturing procedure."""
+        self.teleop_active = False
+        self.current_stitch_index = 0
+        self.transition_to(TaskState.HOME_POSITION, duration=2.0)
+
+    def update(self):
+        """
+        Main control update — called every control step.
+        Updates the state machine and computes actuator commands.
+        """
+        if self.teleop_active:
+            self._apply_targets()
+            return
+
+        progress = self.get_state_progress()
+        t = smooth_step(progress)  # Smooth interpolation parameter
+
+        # State machine logic
+        if self.state == TaskState.IDLE:
+            pass  # Wait for start_autonomous() or teleop
+
+        elif self.state == TaskState.HOME_POSITION:
+            self._set_home_position()
+            if progress >= 1.0:
+                self.transition_to(TaskState.APPROACH_NEEDLE, duration=2.5)
+
+        elif self.state == TaskState.APPROACH_NEEDLE:
+            # Right arm reaches toward the instrument tray (further right + forward)
+            self.right_arm_target = np.array([0.6, 1.4, 0.2, 0.9, 0.0, -0.3, 0.0])
+            self.right_hand_target = self._pose_to_array(self.hand_poses.open_hand())
+            # Left arm stays visible — slight adjustment to show readiness
+            self.left_arm_target = np.array([-0.2, 1.1, 0.0, 1.1, 0.0, 0.0, 0.0])
+            if progress >= 1.0:
+                self.transition_to(TaskState.GRASP_NEEDLE, duration=1.5)
+
+        elif self.state == TaskState.GRASP_NEEDLE:
+            # Close fingers around the needle (pinch grip)
+            self.right_hand_target = self._pose_to_array(self.hand_poses.pinch_grip())
+            if progress >= 1.0:
+                self.transition_to(TaskState.LIFT_NEEDLE, duration=2.0)
+
+        elif self.state == TaskState.LIFT_NEEDLE:
+            # Lift the needle up from the tray toward center
+            self.right_arm_target = np.array([0.3, 1.2, 0.15, 1.1, 0.0, -0.2, 0.0])
+            if progress >= 1.0:
+                self.transition_to(TaskState.POSITION_LEFT_HAND, duration=2.0)
+
+        elif self.state == TaskState.POSITION_LEFT_HAND:
+            # Left hand moves to tissue for retraction — fingers spread
+            self.left_arm_target = np.array([-0.15, 1.4, -0.15, 0.9, 0.0, 0.15, 0.0])
+            self.left_hand_target = self._pose_to_array(
+                self.hand_poses.tissue_retraction()
+            )
+            if progress >= 1.0:
+                self.transition_to(TaskState.APPROACH_TISSUE, duration=2.5)
+
+        elif self.state == TaskState.APPROACH_TISSUE:
+            # Right hand (with needle) approaches wound entry point
+            self.right_arm_target = np.array([0.15, 1.5, 0.1, 0.7, 0.2, -0.35, 0.1])
+            # Left hand stabilizes tissue
+            self.left_arm_target = np.array([-0.1, 1.5, -0.1, 0.8, 0.0, 0.2, 0.0])
+            if progress >= 1.0:
+                self.transition_to(TaskState.PIERCE_TISSUE, duration=2.0)
+
+        elif self.state == TaskState.PIERCE_TISSUE:
+            # Drive needle into tissue — wrist rotation begins
+            self.right_arm_target = np.array([0.1, 1.55, 0.1, 0.65, 0.4, -0.45, 0.15])
+            if progress >= 1.0:
+                self.transition_to(TaskState.DRIVE_THROUGH, duration=2.5)
+
+        elif self.state == TaskState.DRIVE_THROUGH:
+            # Continue driving needle — more wrist rotation
+            self.right_arm_target = np.array([0.0, 1.55, 0.05, 0.55, 0.7, -0.3, 0.1])
+            if progress >= 1.0:
+                self.transition_to(TaskState.EMERGE_OTHER_SIDE, duration=2.0)
+
+        elif self.state == TaskState.EMERGE_OTHER_SIDE:
+            # Needle emerges — wrist completes arc
+            self.right_arm_target = np.array([-0.05, 1.55, 0.0, 0.5, 0.9, -0.2, 0.0])
+            # Left hand prepares to receive the needle
+            self.left_arm_target = np.array([-0.05, 1.5, -0.05, 0.7, -0.2, 0.25, -0.05])
+            if progress >= 1.0:
+                self.transition_to(TaskState.REGRAB_NEEDLE, duration=2.0)
+
+        elif self.state == TaskState.REGRAB_NEEDLE:
+            # Left hand re-grabs needle tip
+            self.left_arm_target = np.array([-0.1, 1.55, -0.1, 0.65, -0.3, 0.3, -0.1])
+            self.left_hand_target = self._pose_to_array(self.hand_poses.tripod_grip())
+            # Right hand releases
+            self.right_hand_target = self._pose_to_array(self.hand_poses.open_hand())
+            if progress >= 1.0:
+                self.transition_to(TaskState.PULL_THREAD, duration=2.5)
+
+        elif self.state == TaskState.PULL_THREAD:
+            # Left hand pulls needle and thread through
+            self.left_arm_target = np.array([-0.25, 1.2, -0.2, 1.1, -0.15, 0.15, -0.1])
+            # Right hand starts to retract
+            self.right_arm_target = np.array([0.15, 1.3, 0.1, 1.0, 0.1, -0.1, 0.0])
+            if progress >= 1.0:
+                self.transition_to(TaskState.TENSION_THREAD, duration=2.0)
+
+        elif self.state == TaskState.TENSION_THREAD:
+            # Right hand grabs thread, applies tension
+            self.right_arm_target = np.array([0.1, 1.35, 0.1, 0.95, 0.15, -0.1, 0.0])
+            self.right_hand_target = self._pose_to_array(self.hand_poses.power_grasp())
+            # Left hand holds steady
+            self.left_arm_target = np.array([-0.2, 1.25, -0.15, 1.05, -0.1, 0.1, -0.05])
+            if progress >= 1.0:
+                self.current_stitch_index += 1
+                if self.current_stitch_index < self.total_stitches:
+                    self.transition_to(TaskState.NEXT_STITCH, duration=1.5)
+                else:
+                    self.transition_to(TaskState.COMPLETE, duration=2.0)
+
+        elif self.state == TaskState.NEXT_STITCH:
+            # Reset for next stitch — right hand takes needle back from left
+            self.right_hand_target = self._pose_to_array(self.hand_poses.pinch_grip())
+            self.left_hand_target = self._pose_to_array(self.hand_poses.open_hand())
+            # Both arms reposition for next suture point
+            self.right_arm_target = np.array([0.2, 1.25, 0.1, 1.0, 0.0, -0.15, 0.0])
+            self.left_arm_target = np.array([-0.2, 1.15, -0.05, 1.05, 0.0, 0.05, 0.0])
+            if progress >= 1.0:
+                self.transition_to(TaskState.APPROACH_TISSUE, duration=2.5)
+
+        elif self.state == TaskState.COMPLETE:
+            # Return to home position — procedure complete
+            self._set_home_position()
+
+        # Apply interpolated targets to actuators
+        self._apply_interpolated_targets(t)
+
+    def _apply_interpolated_targets(self, t: float):
+        """Apply smoothly interpolated joint targets to actuators."""
+        # Interpolate between previous and current targets
+        r_arm = lerp(self.right_arm_prev, self.right_arm_target, t)
+        r_hand = lerp(self.right_hand_prev, self.right_hand_target, t)
+        l_arm = lerp(self.left_arm_prev, self.left_arm_target, t)
+        l_hand = lerp(self.left_hand_prev, self.left_hand_target, t)
+
+        # Set actuator controls
+        for i, act_id in enumerate(self.r_arm_act_ids):
+            if i < len(r_arm):
+                self.data.ctrl[act_id] = r_arm[i]
+
+        for i, act_id in enumerate(self.r_hand_act_ids):
+            if i < len(r_hand):
+                self.data.ctrl[act_id] = r_hand[i]
+
+        for i, act_id in enumerate(self.l_arm_act_ids):
+            if i < len(l_arm):
+                self.data.ctrl[act_id] = l_arm[i]
+
+        for i, act_id in enumerate(self.l_hand_act_ids):
+            if i < len(l_hand):
+                self.data.ctrl[act_id] = l_hand[i]
+
+    def _apply_targets(self):
+        """Apply current targets directly (for teleoperation)."""
+        for i, act_id in enumerate(self.r_arm_act_ids):
+            if i < len(self.right_arm_target):
+                self.data.ctrl[act_id] = self.right_arm_target[i]
+
+        for i, act_id in enumerate(self.r_hand_act_ids):
+            if i < len(self.right_hand_target):
+                self.data.ctrl[act_id] = self.right_hand_target[i]
+
+        for i, act_id in enumerate(self.l_arm_act_ids):
+            if i < len(self.left_arm_target):
+                self.data.ctrl[act_id] = self.left_arm_target[i]
+
+        for i, act_id in enumerate(self.l_hand_act_ids):
+            if i < len(self.left_hand_target):
+                self.data.ctrl[act_id] = self.left_hand_target[i]
+
+    def get_status(self) -> Dict:
+        """Get current controller status for HUD display."""
+        return {
+            "state": self.state.name,
+            "stitch": f"{self.current_stitch_index + 1}/{self.total_stitches}",
+            "progress": f"{self.get_state_progress() * 100:.0f}%",
+            "time": f"{self.get_simulation_time():.1f}s",
+            "mode": "TELEOP" if self.teleop_active else "AUTO",
+        }
